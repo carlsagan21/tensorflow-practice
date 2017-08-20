@@ -47,6 +47,12 @@ import seq2seq_model
 
 import msgpack as pickle
 
+from guppy import hpy
+
+h = hpy()
+
+print(h.heap())
+
 tf.app.flags.DEFINE_float("learning_rate", 0.5, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99,
                           "Learning rate decays by this much.")
@@ -109,6 +115,13 @@ def read_data(source_path, target_path, max_size=None):
                 counter += 1
                 if counter % 200000 == 0:
                     print("  reading data line %d" % counter)
+                    print("  data_set: " + str(
+                        sys.getsizeof(data_set) +
+                        sys.getsizeof(data_set[0]) +
+                        sys.getsizeof(data_set[1]) +
+                        sys.getsizeof(data_set[3])
+
+                    ))
                     sys.stdout.flush()
                 source_ids = [int(x) for x in source.split()]
                 target_ids = [int(x) for x in target.split()]
@@ -177,17 +190,13 @@ def train():
             FLAGS.data_dir, FLAGS.from_vocab_size, FLAGS.to_vocab_size)
 
     with tf.Session() as sess:
-        # Create model.
-        print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
-        model = create_model(sess, False)
-
         # Read data into buckets and compute their sizes.
         # print("Reading development and training data (limit: %d)." % FLAGS.max_train_data_size)
         dev_set_path = FLAGS.train_dir + '/dev_set.' + str(FLAGS.from_vocab_size) + '.' + pickle.__name__
         train_set_path = FLAGS.train_dir + '/train_set.ids' + str(FLAGS.from_vocab_size) + '.ds' + str(
             FLAGS.max_train_data_size) + '.' + pickle.__name__
 
-        if not tf.gfile.Exists(dev_set_path):
+        if not tf.gfile.Exists(dev_set_path) or True:
             print("Reading development data")
             dev_set = read_data(from_dev, to_dev)
             with tf.gfile.GFile(dev_set_path, mode='w') as f:
@@ -197,7 +206,9 @@ def train():
             with tf.gfile.GFile(dev_set_path, mode='r') as f:
                 dev_set = pickle.load(f)
 
-        if not tf.gfile.Exists(train_set_path):
+        print(h.heap())
+
+        if not tf.gfile.Exists(train_set_path) or True:
             print("Reading training data (limit: %d)." % FLAGS.max_train_data_size)
             train_set = read_data(from_train, to_train, FLAGS.max_train_data_size)
             with tf.gfile.GFile(train_set_path, 'w') as f:
@@ -223,6 +234,10 @@ def train():
         current_step = 0
         previous_losses = []
         ppx_history = []
+
+        # Create model.
+        print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
+        model = create_model(sess, False)
 
         is_continue = True
         while is_continue:
@@ -284,9 +299,9 @@ def train():
                     eval_ppxs.append(eval_ppx)
 
                 mean_ppx = np.mean(eval_ppxs)
-                if len(ppx_history) > 1:
-                    if ppx_history[-1] < mean_ppx:
-                        is_continue = False
+#                if len(ppx_history) > 1:
+#                    if ppx_history[-1] < mean_ppx:
+#                        is_continue = False
 
                 ppx_history.append(mean_ppx)
                 sys.stdout.flush()
