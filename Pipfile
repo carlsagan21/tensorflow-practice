@@ -6,4 +6,6 @@ verify_ssl = true
 tensorflow = "*"
 bson = "*"
 msgpack-python = "*"
-memory-profiler = "*"
+requests = "*"
+memory_profiler = "*"
+beautifulsoup4 = "*"
