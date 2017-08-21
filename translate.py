@@ -47,11 +47,11 @@ import seq2seq_model
 
 import msgpack as pickle
 
-from guppy import hpy
+# from guppy import hpy
 
-h = hpy()
+# h = hpy()
 
-print(h.heap())
+# print(h.heap())
 
 tf.app.flags.DEFINE_float("learning_rate", 0.5, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99,
@@ -190,6 +190,10 @@ def train():
             FLAGS.data_dir, FLAGS.from_vocab_size, FLAGS.to_vocab_size)
 
     with tf.Session() as sess:
+        # Create model.
+        print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
+        model = create_model(sess, False)
+
         # Read data into buckets and compute their sizes.
         # print("Reading development and training data (limit: %d)." % FLAGS.max_train_data_size)
         dev_set_path = FLAGS.train_dir + '/dev_set.' + str(FLAGS.from_vocab_size) + '.' + pickle.__name__
@@ -205,8 +209,6 @@ def train():
             print("Loading development")
             with tf.gfile.GFile(dev_set_path, mode='r') as f:
                 dev_set = pickle.load(f)
-
-        print(h.heap())
 
         if not tf.gfile.Exists(train_set_path) or True:
             print("Reading training data (limit: %d)." % FLAGS.max_train_data_size)
@@ -234,10 +236,6 @@ def train():
         current_step = 0
         previous_losses = []
         ppx_history = []
-
-        # Create model.
-        print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
-        model = create_model(sess, False)
 
         is_continue = True
         while is_continue:

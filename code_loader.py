@@ -1,8 +1,8 @@
 # coding=utf-8
-import os
-import itertools
+from __future__ import print_function
 
-import tensorflow as tf
+import os
+
 from tensorflow.python.platform import gfile
 import msgpack as pickle
 
@@ -28,7 +28,7 @@ _END_LINE_ID = 5
 # _WORD_SPLIT = re.compile(b"([.,!?\"':;)(])")
 # _DIGIT_RE = re.compile(br"\d")
 
-def create_vocabulary(vocabulary_path, data, max_vocabulary_size, normalize_digits=False):
+def create_vocabulary(vocabulary_path, data, max_vocabulary_size, cache=True):
     """Create vocabulary file (if it does not exist yet) from data file.
 
     Data file is assumed to contain one sentence per line. Digits are normalized (if normalize_digits is set).
@@ -44,23 +44,12 @@ def create_vocabulary(vocabulary_path, data, max_vocabulary_size, normalize_digi
         if None, basic_tokenizer will be used.
       normalize_digits: Boolean; if true, all digits are replaced by 0s.
     """
-    if not gfile.Exists(vocabulary_path):
+    if not gfile.Exists(vocabulary_path) or not cache:
         print("Creating vocabulary %s" % (vocabulary_path))
         vocab_freq = {}
         # counter = 0
         for source in data:
             for idx, tokens in enumerate(source):
-                # counter += 1
-                # byte_tokens = []
-                # for token in tokens:
-                #     byte_token = []
-                #     for w in token:
-                #         if type(w) is str:
-                #             byte_token.append(tf.compat.as_bytes(w))
-                #         else:
-                #             byte_token.append(w)
-                #     byte_tokens.append(byte_token)
-
                 for w in tokens:
                     word = w[1]
                     # word = _DIGIT_RE.sub(b"0", w) if normalize_digits else w
@@ -85,7 +74,7 @@ def create_vocabulary(vocabulary_path, data, max_vocabulary_size, normalize_digi
     return id_to_vocab, vocab_to_id, vocab_freq
 
 
-def data_to_token_ids(source_data, id_data_path, id_to_vocab, vocab_to_id, normalize_digits=False):
+def data_to_token_ids(source_data, id_data_path, id_to_vocab, vocab_to_id, cache=True):
     """Tokenize data file and turn into token-ids using given vocabulary file.
 
     This function loads data line-by-line from data_path, calls the above
@@ -100,17 +89,19 @@ def data_to_token_ids(source_data, id_data_path, id_to_vocab, vocab_to_id, norma
         if None, basic_tokenizer will be used.
       normalize_digits: Boolean; if true, all digits are replaced by 0s.
     """
-    if not gfile.Exists(id_data_path):
-        print("Tokenizing data")
+    if not gfile.Exists(id_data_path) or not cache:
+        print("Creating id tokenized data %s" % id_data_path)
 
         id_data = []
 
         for source in source_data:
-            id_source = []
+            id_source = [[_START_LINE_ID]]
             for line in source:
-                id_line = [vocab_to_id.get(word, UNK_ID) for word in line]
+                id_line = [vocab_to_id.get(word[1], UNK_ID) for word in line]
                 id_source.append(id_line)
+            id_source.append([_END_LINE_ID])
             id_data.append(id_source)
+
 
         with gfile.GFile(id_data_path, mode='w') as id_data_file:
             pickle.dump(id_data, id_data_file)
@@ -143,7 +134,11 @@ def prepare_data(
         data_dir,
         vocabulary_size,
         data_path='1000-6-2017-07-13-12:55:21.msgpack',
+        cache=True
 ):
+    if vocabulary_size == 0:
+        actual_vocab_size = 100000 # big enough
+
     data = None
     with open(data_dir + '/' + data_path) as data_file:
         data = pickle.load(data_file)
@@ -158,12 +153,12 @@ def prepare_data(
     # Create vocabularies of the appropriate sizes.
     # vocab 을 따로 관리할 필요 없음. 같은 소스이므로.
     vocab_path = os.path.join(data_dir, 'vocab%d.%s' % (vocabulary_size, pickle.__name__))
-    id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, vocabulary_size, False)
+    id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, actual_vocab_size, cache)
 
     train_path = data_dir + '/' + data_path
     # Create token ids for the training data.
     train_ids_path = train_path + (".ids%d" % vocabulary_size)
-    train_id_data = data_to_token_ids(source_data, train_ids_path, id_to_vocab, vocab_to_id)
+    train_id_data = data_to_token_ids(source_data, train_ids_path, id_to_vocab, vocab_to_id, cache)
 
     # Create token ids for the development data.
     # to_dev_ids_path = to_dev_path + (".ids%d" % to_vocabulary_size)
