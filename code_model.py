@@ -206,7 +206,7 @@ class CodeModel(object):
         self.decoder_inputs = []
         self.target_weights = []
 
-        # FIXME shape = [batch_size] or None?
+        # TODO shape = [batch_size] or None?
         for i in xrange(buckets[-1][0]):  # Last bucket is the biggest one.
             self.encoder_inputs.append(tf.placeholder(tf.int32, shape=[2, None], name="encoder{0}".format(i)))
         for i in xrange(buckets[-1][1] + 1):
@@ -240,8 +240,6 @@ class CodeModel(object):
                 softmax_loss_function=softmax_loss_function
             )
 
-        print("model output and losses are set. start to set gradient descendent.")
-
         # Gradients and SGD update operation for training the model.
         params = tf.trainable_variables()
         if not forward_only:
@@ -249,7 +247,7 @@ class CodeModel(object):
             self.updates = []
             opt = tf.train.RMSPropOptimizer(self.learning_rate)
             for b in xrange(len(buckets)):
-                print("setting gradient for bucket %d" % b)
+                print("setting gradients and SGD update operation for bucket %d" % b)
                 gradients = tf.gradients(self.losses[b], params)
                 clipped_gradients, norm = tf.clip_by_global_norm(gradients,
                                                                  max_gradient_norm)
@@ -267,7 +265,8 @@ class CodeModel(object):
 
         Args:
           session: tensorflow session to use.
-          encoder_inputs: list of numpy int vectors to feed as encoder inputs.
+          encoder_inputs_front: list of numpy int vectors to feed as encoder inputs.
+          encoder_inputs_back: list of numpy int vectors to feed as encoder inputs.
           decoder_inputs: list of numpy int vectors to feed as decoder inputs.
           target_weights: list of numpy float vectors to feed as target weights.
           bucket_id: which bucket of the model to use.

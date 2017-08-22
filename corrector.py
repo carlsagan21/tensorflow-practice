@@ -6,6 +6,10 @@
 # decoder
 # decoder test
 # feed forward
+# attention
+# beam search
+# 1.0 -> 1.3
+# 연속되는 동일한 코드 제거하기
 
 # TODO hyperparams
 # dropout
@@ -34,8 +38,8 @@ tf.app.flags.DEFINE_float("learning_rate", 0.002, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99, "Learning rate decays by this much.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 50, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
-tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
+tf.app.flags.DEFINE_integer("size", 64, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("num_layers", 2, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("vocab_size", 0, "Token vocabulary size. (0: set by data total vocab)")
 tf.app.flags.DEFINE_integer("epoch", 0, "How many epochs (0: no limit)")
 tf.app.flags.DEFINE_string("data_dir", "./code-data", "Data directory")
@@ -48,17 +52,16 @@ tf.app.flags.DEFINE_integer("steps_per_checkpoint", 0, "How many training steps 
 tf.app.flags.DEFINE_boolean("decode", False, "Set to True for interactive decoding.")
 tf.app.flags.DEFINE_boolean("self_test", False, "Run a self-test if this is set to True.")
 tf.app.flags.DEFINE_boolean("use_fp16", False, "Train using fp16 instead of fp32.")
+tf.app.flags.DEFINE_boolean("cache", False, "Train using cached data.")
 
 FLAGS = tf.app.flags.FLAGS
 
 # We use a number of buckets and pad to the closest one for efficiency.
 # See seq2seq_model.Seq2SeqModel for details of how they work.
 # encoding 이 두개니까 버킷을 어떻게 잡을지 생각좀 해봐야
-_buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
-
-
-# _buckets = [(5, 15), (20, 50)]
-# _buckets = [(15, 25), (25, 35)]
+# _buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
+# _buckets = [(10, 15), (40, 50)]
+_buckets = [(15, 25), (25, 35)]
 
 
 def read_data(train_id_set, max_size=None):
@@ -115,8 +118,16 @@ def get_perplexity(loss):
     return math.exp(float(loss)) if loss < 300 else float("inf")
 
 
+def save_checkpoint(model, sess):
+    # Save checkpoint and zero timer and loss.
+    checkpoint_path = os.path.join(FLAGS.train_dir, "translate.ckpt" + ".size." + str(FLAGS.size) + ".nl." + str(FLAGS.num_layers))
+    model.saver.save(sess, checkpoint_path, global_step=model.global_step)
+
+
 def train():
-    train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, cache=True)
+    cache = False
+
+    train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, cache=cache)
 
     with tf.Session() as sess:
         # Create model.
@@ -128,7 +139,7 @@ def train():
         # dev_set_path = FLAGS.train_dir + "/dev_set." + str(FLAGS.from_vocab_size) + "." + pickle.__name__
         train_set_path = FLAGS.train_dir + "/train_set.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size) + "." + pickle.__name__
 
-        if not tf.gfile.Exists(train_set_path) or True:
+        if not tf.gfile.Exists(train_set_path) or not cache:
             print("Reading training data (limit: %d)." % FLAGS.max_train_data_size)
             train_set = read_data(train_id_data, FLAGS.max_train_data_size)
             with tf.gfile.GFile(train_set_path, "w") as f:
@@ -150,16 +161,20 @@ def train():
         # This is the training loop.
         print("Running the training loop")
 
-        step_time, loss = 0.0, 0.0
+        epoch_step_time, epoch_loss, ckpt_step_time, ckpt_loss = 0.0, 0.0, 0.0, 0.0
         current_step = 0
         epoch_step = 0
         previous_losses = []
 
-        out = "Error: not enough steps to run with checkpoint_step."
+        std_out = "Error: not enough steps to run with checkpoint_step."
         test_out = ""
 
         steps_per_epoch = (int(train_total_size) // FLAGS.batch_size)
-        steps_per_checkpoint = FLAGS.steps_per_checkpoint if FLAGS.steps_per_checkpoint != 0 else steps_per_epoch
+        steps_per_checkpoint = 2000
+        if FLAGS.steps_per_checkpoint != 0:
+            steps_per_checkpoint = FLAGS.steps_per_checkpoint
+        elif FLAGS.epoch != 0:
+            steps_per_checkpoint = steps_per_epoch * FLAGS.epoch
 
         while True:
             # Choose a bucket according to data distribution. We pick a random number
@@ -174,8 +189,12 @@ def train():
                 train_set, bucket_id)
             _, step_loss, _ = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs,
                                          target_weights, bucket_id, False)
-            step_time += (time.time() - start_time) / steps_per_checkpoint
-            loss += step_loss / steps_per_checkpoint
+
+            ckpt_step_time += (time.time() - start_time) / steps_per_checkpoint
+            ckpt_loss += step_loss / steps_per_checkpoint
+            epoch_step_time += (time.time() - start_time) / steps_per_epoch
+            epoch_loss += step_loss / steps_per_epoch
+
             current_step += 1
 
             # print condition
@@ -186,32 +205,43 @@ def train():
 
             # per checkpoint jobs
             if current_step % steps_per_checkpoint == 0:
-                # Print statistics for the previous epoch.
-                out = "checkpoint: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
-                    model.global_step.eval(), model.learning_rate.eval(), step_time, loss, get_perplexity(loss))
-                print(out)
+                # Print statistics for the previous checkpoint.
+                std_out = "checkpoint: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
+                    model.global_step.eval(), model.learning_rate.eval(), ckpt_step_time, ckpt_loss, get_perplexity(ckpt_loss))
+                print(std_out)
 
-                test_out = decode_tester(sess, model)
-
-                # Decrease learning rate if no improvement was seen over last 3 times.
-                if len(previous_losses) > 2 and loss > max(previous_losses[-3:]):
-                    sess.run(model.learning_rate_decay_op)
-                previous_losses.append(loss)
+                _ = decode_tester(sess, model)
 
                 # Save checkpoint and zero timer and loss.
-                checkpoint_path = os.path.join(FLAGS.train_dir, "translate.ckpt" + ".size." + str(FLAGS.size) + ".nl." + str(FLAGS.num_layers))
-                model.saver.save(sess, checkpoint_path, global_step=model.global_step)
-
-                step_time, loss = 0.0, 0.0
+                save_checkpoint(model, sess)
+                ckpt_step_time, ckpt_loss = 0.0, 0.0
 
             # escape if all epoch is done
             if current_step % steps_per_epoch == 0:
                 epoch_step += 1
                 print("epoch %d" % epoch_step)
+
+                # Print statistics for the previous epoch.
+                std_out = "checkpoint: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
+                    model.global_step.eval(), model.learning_rate.eval(), epoch_step_time, epoch_loss, get_perplexity(epoch_loss))
+                print(std_out)
+
+                # Decrease learning rate if no improvement was seen over last 3 epoch times.
+                if len(previous_losses) > 2 and epoch_loss > max(previous_losses[-3:]):
+                    sess.run(model.learning_rate_decay_op)
+                previous_losses.append(epoch_loss)
+
+                test_out = decode_tester(sess, model)
+
+                epoch_step_time, epoch_loss = 0.0, 0.0
+
                 if FLAGS.epoch != 0 and epoch_step >= FLAGS.epoch:
+                    # Save checkpoint.
+                    save_checkpoint(model, sess)
+
                     with open(FLAGS.train_dir + "/result.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size), "a") as output_file:
                         output_file.write(
-                            datetime.now().strftime("%Y-%m-%d-%H:%M:%S") + ": " + out + " // Tag: " + FLAGS.out_tag + "\n" +
+                            datetime.now().strftime("%Y-%m-%d-%H:%M:%S") + ": " + std_out + " // Tag: " + FLAGS.out_tag + "\n" +
                             "\ttest_out: " + test_out + "\n"
                         )
                     break
@@ -230,17 +260,17 @@ def decode_tester(sess, model):
         "source": source
     }]
     data = source_filter.filter_danger(data, "(import\s+os)|(from\s+os)|(shutil)")
-    source_filter.remove_redundent_lines(data)
+    source_filter.remove_redundent_newlines_and_set_line_length(data)
     data = source_filter.set_token(data)
     source_data = code_loader.data_to_tokens_list(data)
 
     id_data = []
     for src in source_data:
-        id_source = [[code_loader._START_LINE_ID]]
+        id_source = [[code_loader.START_LINE_ID]]
         for line in src:
             id_line = [vocab_to_id.get(word[1], code_loader.UNK_ID) for word in line]
             id_source.append(id_line)
-        id_source.append([code_loader._END_LINE_ID])
+        id_source.append([code_loader.END_LINE_ID])
         id_data.append(id_source)
 
     bucket_id = -1

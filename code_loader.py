@@ -20,8 +20,8 @@ PAD_ID = 0
 GO_ID = 1
 EOS_ID = 2
 UNK_ID = 3
-_START_LINE_ID = 4
-_END_LINE_ID = 5
+START_LINE_ID = 4
+END_LINE_ID = 5
 
 
 # Regular expressions used to tokenize.
@@ -38,14 +38,12 @@ def create_vocabulary(vocabulary_path, data, max_vocabulary_size, cache=True):
 
     Args:
       vocabulary_path: path where the vocabulary will be created.
-      data_path: data file that will be used to create vocabulary.
+      data:
       max_vocabulary_size: limit on the size of the created vocabulary.
-      tokenizer: a function to use to tokenize each data sentence;
-        if None, basic_tokenizer will be used.
-      normalize_digits: Boolean; if true, all digits are replaced by 0s.
+      cache:
     """
     if not gfile.Exists(vocabulary_path) or not cache:
-        print("Creating vocabulary %s" % (vocabulary_path))
+        print("Creating vocabulary %s" % vocabulary_path)
         vocab_freq = {}
         # counter = 0
         for source in data:
@@ -62,9 +60,9 @@ def create_vocabulary(vocabulary_path, data, max_vocabulary_size, cache=True):
         if len(vocab_list) > max_vocabulary_size:
             vocab_list = vocab_list[:max_vocabulary_size]
 
-        id_to_vocab = dict([(id, vocab) for (id, vocab) in enumerate(vocab_list)])
-        vocab_to_id = dict([(vocab, id) for (id, vocab) in enumerate(vocab_list)])
-        with gfile.GFile(vocabulary_path, mode="wb") as vocab_file:
+        id_to_vocab = dict([(idx, vocab) for (idx, vocab) in enumerate(vocab_list)])
+        vocab_to_id = dict([(vocab, idx) for (idx, vocab) in enumerate(vocab_list)])
+        with gfile.GFile(vocabulary_path, mode="w") as vocab_file:
             pickle.dump([id_to_vocab, vocab_to_id, vocab_freq], vocab_file)
 
     else:
@@ -74,7 +72,7 @@ def create_vocabulary(vocabulary_path, data, max_vocabulary_size, cache=True):
     return id_to_vocab, vocab_to_id, vocab_freq
 
 
-def data_to_token_ids(source_data, id_data_path, id_to_vocab, vocab_to_id, cache=True):
+def data_to_token_ids(source_data, id_data_path, vocab_to_id, cache=True):
     """Tokenize data file and turn into token-ids using given vocabulary file.
 
     This function loads data line-by-line from data_path, calls the above
@@ -82,23 +80,21 @@ def data_to_token_ids(source_data, id_data_path, id_to_vocab, vocab_to_id, cache
     for sentence_to_token_ids on the details of token-ids format.
 
     Args:
-      data_path: path to the data file in one-sentence-per-line format.
-      target_path: path where the file with token-ids will be created.
-      vocabulary_path: path to the vocabulary file.
-      tokenizer: a function to use to tokenize each sentence;
-        if None, basic_tokenizer will be used.
-      normalize_digits: Boolean; if true, all digits are replaced by 0s.
+      source_data:
+      id_data_path:
+      vocab_to_id:
+      cache: Boolean;
     """
     if not gfile.Exists(id_data_path) or not cache:
         print("Creating id tokenized data %s" % id_data_path)
 
         id_data = []
         for source in source_data:
-            id_source = [[_START_LINE_ID]]
+            id_source = [[START_LINE_ID]]
             for line in source:
                 id_line = [vocab_to_id.get(word[1], UNK_ID) for word in line]
                 id_source.append(id_line)
-            id_source.append([_END_LINE_ID])
+            id_source.append([END_LINE_ID])
             id_data.append(id_source)
 
         with gfile.GFile(id_data_path, mode="w") as id_data_file:
@@ -134,29 +130,45 @@ def prepare_data(
         data_path="1000-6-2017-07-13-12:55:21.msgpack",
         cache=True
 ):
-    if vocabulary_size == 0:
-        actual_vocab_size = 100000  # big enough
+    big_vocab_size = 10000000  # big enough
 
-    data = None
+    data = []
     with open(data_dir + "/" + data_path) as data_file:
         data = pickle.load(data_file)
 
     data = source_filter.filter_danger(data, "(import\s+os)|(from\s+os)|(shutil)")
-    source_filter.remove_redundent_lines(data)
+    source_filter.remove_redundent_newlines_and_set_line_length(data)
     data = source_filter.set_token(data)  # delete untokenizable sources
-    correct_data = filter(lambda d: d["accurate"], data)
+    data = filter(lambda elm: elm["accurate"], data)  # get only accurate
 
-    source_data = data_to_tokens_list(correct_data)
+    # remove too long source.
+    _ = source_filter.get_length_stat(data)
+    data = source_filter.filter_lines_too_long(data)
+
+    # remove too much tokens per line.
+    _ = source_filter.get_token_stat(data)
+    data = source_filter.filter_tokens_too_much(data)
+
+    # remove too less freq tokens with sources.
+    _, _, removed_data, _ = source_filter.get_token_freq_stat(data)
+    freq_limit_data = []
+    for idx, d in enumerate(data):
+        if idx not in removed_data:
+            freq_limit_data.append(d)
+
+    data = freq_limit_data
+
+    source_data = data_to_tokens_list(data)
 
     # Create vocabularies of the appropriate sizes.
     # vocab 을 따로 관리할 필요 없음. 같은 소스이므로.
     vocab_path = os.path.join(data_dir, "vocab%d.%s" % (vocabulary_size, pickle.__name__))
-    id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, actual_vocab_size, cache)
+    id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, big_vocab_size, cache)
 
     train_path = data_dir + "/" + data_path
     # Create token ids for the training data.
     train_ids_path = train_path + (".ids%d" % vocabulary_size)
-    train_id_data = data_to_token_ids(source_data, train_ids_path, id_to_vocab, vocab_to_id, cache)
+    train_id_data = data_to_token_ids(source_data, train_ids_path, vocab_to_id, cache)
 
     # Create token ids for the development data.
     # to_dev_ids_path = to_dev_path + (".ids%d" % to_vocabulary_size)

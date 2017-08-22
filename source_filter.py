@@ -25,7 +25,7 @@ temp_file = '_temp.py'
 input_file = '1000-6-2017-07-13-12:55:21.json'
 
 
-def remove_redundent_lines(data):
+def remove_redundent_newlines_and_set_line_length(data):
     for d in data:
         d['source'] = re.sub('(\\n)+', '\n', d['source'])  # TODO 토큰 기준으로 하면 더 정확할듯
         d['source'] = re.sub('(\n)$', '', d['source']) # remove last linebreak
@@ -53,7 +53,7 @@ def get_token_stat(data):
     return token_stat
 
 
-def get_token_freq_stat(data):
+def get_token_freq_stat(data, tokens_freq_limit=tokens_freq_limit):
     total_token = 0
     token_freq_stat = {}
     for di, d in enumerate(data):
@@ -89,12 +89,12 @@ def get_token_freq_stat(data):
     return token_freq_stat, total_removed, removed_data, removed_token_freq_stat
 
 
-def filter_lines_too_long(data):
+def filter_lines_too_long(data, lines_limit=lines_limit):
     sorted_data = sorted(data, key=lambda d: d['line_length'])
     return sorted_data[:int(round(len(data) * lines_limit))]
 
 
-def filter_tokens_too_much(data):
+def filter_tokens_too_much(data, tokens_limit=tokens_limit):
     sorted_data = sorted(data, key=lambda d: len(d['token']))
     return sorted_data[:int(round(len(data) * tokens_limit))]
 
@@ -254,7 +254,7 @@ if __name__ == '__main__':
     data = filter_danger(raw_data)
 
     data = filter(lambda d: d['accurate'], data)  # get only accurate
-    remove_redundent_lines(data)  # too much newlines
+    remove_redundent_newlines_and_set_line_length(data)  # too much newlines
 
     length_stat = get_length_stat(data)
     line_limit_data = filter_lines_too_long(data)
@@ -268,7 +268,7 @@ if __name__ == '__main__':
     token_freq_stat, total_removed, removed_data, removed_token_freq_stat = get_token_freq_stat(token_limit_data)
     freq_limit_data = []
     for i, d in enumerate(token_limit_data):
-        if not i in removed_data:
+        if i not in removed_data:
             freq_limit_data.append(d)
 
     re_data = freq_limit_data
