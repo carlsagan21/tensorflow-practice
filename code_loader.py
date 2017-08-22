@@ -68,7 +68,7 @@ def create_vocabulary(vocabulary_path, data, max_vocabulary_size, cache=True):
             pickle.dump([id_to_vocab, vocab_to_id, vocab_freq], vocab_file)
 
     else:
-        with gfile.GFile(vocabulary_path, mode='r') as vocab_file:
+        with gfile.GFile(vocabulary_path, mode="r") as vocab_file:
             id_to_vocab, vocab_to_id, vocab_freq = pickle.load(vocab_file)
 
     return id_to_vocab, vocab_to_id, vocab_freq
@@ -93,7 +93,6 @@ def data_to_token_ids(source_data, id_data_path, id_to_vocab, vocab_to_id, cache
         print("Creating id tokenized data %s" % id_data_path)
 
         id_data = []
-
         for source in source_data:
             id_source = [[_START_LINE_ID]]
             for line in source:
@@ -102,19 +101,18 @@ def data_to_token_ids(source_data, id_data_path, id_to_vocab, vocab_to_id, cache
             id_source.append([_END_LINE_ID])
             id_data.append(id_source)
 
-
-        with gfile.GFile(id_data_path, mode='w') as id_data_file:
+        with gfile.GFile(id_data_path, mode="w") as id_data_file:
             pickle.dump(id_data, id_data_file)
 
     else:
-        with gfile.GFile(id_data_path, mode='r') as token_file:
+        with gfile.GFile(id_data_path, mode="r") as token_file:
             id_data = pickle.load(token_file)
 
     return id_data
 
 
 def data_to_tokens_list(data):
-    data_tokens = map(lambda d: d['token'], data)
+    data_tokens = map(lambda d: d["token"], data)
     train_data = []
     for tokens in data_tokens:
         separated_token = []
@@ -133,29 +131,29 @@ def data_to_tokens_list(data):
 def prepare_data(
         data_dir,
         vocabulary_size,
-        data_path='1000-6-2017-07-13-12:55:21.msgpack',
+        data_path="1000-6-2017-07-13-12:55:21.msgpack",
         cache=True
 ):
     if vocabulary_size == 0:
-        actual_vocab_size = 100000 # big enough
+        actual_vocab_size = 100000  # big enough
 
     data = None
-    with open(data_dir + '/' + data_path) as data_file:
+    with open(data_dir + "/" + data_path) as data_file:
         data = pickle.load(data_file)
 
-    data = source_filter.filter_danger(data, '(import\s+os)|(from\s+os)|(shutil)')
+    data = source_filter.filter_danger(data, "(import\s+os)|(from\s+os)|(shutil)")
     source_filter.remove_redundent_lines(data)
     data = source_filter.set_token(data)  # delete untokenizable sources
-    correct_data = filter(lambda d: d['accurate'], data)
+    correct_data = filter(lambda d: d["accurate"], data)
 
     source_data = data_to_tokens_list(correct_data)
 
     # Create vocabularies of the appropriate sizes.
     # vocab 을 따로 관리할 필요 없음. 같은 소스이므로.
-    vocab_path = os.path.join(data_dir, 'vocab%d.%s' % (vocabulary_size, pickle.__name__))
+    vocab_path = os.path.join(data_dir, "vocab%d.%s" % (vocabulary_size, pickle.__name__))
     id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, actual_vocab_size, cache)
 
-    train_path = data_dir + '/' + data_path
+    train_path = data_dir + "/" + data_path
     # Create token ids for the training data.
     train_ids_path = train_path + (".ids%d" % vocabulary_size)
     train_id_data = data_to_token_ids(source_data, train_ids_path, id_to_vocab, vocab_to_id, cache)

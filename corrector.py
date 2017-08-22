@@ -1,29 +1,49 @@
 # coding=utf-8
-from __future__ import print_function
+# TODO must
+# remove exactly same code
+# feed source length as sequence_length
+# beam search
+# decoder
+# decoder test
+# feed forward
 
+# TODO hyperparams
+# dropout
+# bucketing
+# optimizer
+
+from __future__ import print_function
+from __future__ import division
+
+import os
 import time
 import math
+from datetime import datetime
 
 import msgpack as pickle
-import tensorflow as tf
 import numpy as np
+import tensorflow as tf
+from tensorflow.python.platform import gfile
 
 import code_loader
 import code_model
+import source_filter
 
-tf.app.flags.DEFINE_float('learning_rate', 0.5, 'Learning rate.')
-tf.app.flags.DEFINE_float('learning_rate_decay_factor', 0.99, 'Learning rate decays by this much.')
-tf.app.flags.DEFINE_float('max_gradient_norm', 5.0, 'Clip gradients to this norm.')
+tf.app.flags.DEFINE_float("learning_rate", 0.002, "Learning rate.")
+tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99, "Learning rate decays by this much.")
+tf.app.flags.DEFINE_float("max_gradient_norm", 5.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 50, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("size", 64, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("num_layers", 2, "Number of layers in the model.")
-tf.app.flags.DEFINE_integer("vocab_size", 0, "token vocabulary size.")
+tf.app.flags.DEFINE_integer("vocab_size", 0, "Token vocabulary size. (0: set by data total vocab)")
+tf.app.flags.DEFINE_integer("epoch", 0, "How many epochs (0: no limit)")
 tf.app.flags.DEFINE_string("data_dir", "./code-data", "Data directory")
 tf.app.flags.DEFINE_string("train_dir", "./code-data", "Training directory.")
 tf.app.flags.DEFINE_string("train_data_path", None, "Training data.")
 tf.app.flags.DEFINE_string("dev_data_path", None, "Training data.")
+tf.app.flags.DEFINE_string("out_tag", "", "A tag for certain output.")
 tf.app.flags.DEFINE_integer("max_train_data_size", 0, "Limit on the size of training data (0: no limit).")
-tf.app.flags.DEFINE_integer("steps_per_checkpoint", 200, "How many training steps to do per checkpoint.")
+tf.app.flags.DEFINE_integer("steps_per_checkpoint", 0, "How many training steps to do per checkpoint. (0: same with epoch)")
 tf.app.flags.DEFINE_boolean("decode", False, "Set to True for interactive decoding.")
 tf.app.flags.DEFINE_boolean("self_test", False, "Run a self-test if this is set to True.")
 tf.app.flags.DEFINE_boolean("use_fp16", False, "Train using fp16 instead of fp32.")
@@ -33,7 +53,9 @@ FLAGS = tf.app.flags.FLAGS
 # We use a number of buckets and pad to the closest one for efficiency.
 # See seq2seq_model.Seq2SeqModel for details of how they work.
 # encoding 이 두개니까 버킷을 어떻게 잡을지 생각좀 해봐야
-_buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
+# _buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
+# _buckets = [(5, 15), (20, 50)]
+_buckets = [(50, 50)]
 
 
 def read_data(train_id_set, max_size=None):
@@ -56,9 +78,9 @@ def read_data(train_id_set, max_size=None):
                     data_set[bucket_id].append([source_ids, target_ids])
                     break
 
-    print('  not saved: %d' % (counter - saved))
+    print("  not saved: %d" % (counter - saved))
 
-    print('  read data line total %d' % counter)
+    print("  read data line total %d" % counter)
     return data_set
 
 
@@ -86,6 +108,10 @@ def create_model(session, forward_only, vocab_size=FLAGS.vocab_size):
     return model
 
 
+def get_perplexity(loss):
+    return math.exp(float(loss)) if loss < 300 else float("inf")
+
+
 def train():
     train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, cache=True)
 
@@ -96,17 +122,17 @@ def train():
 
         # Read data into buckets and compute their sizes.
         print("Reading development and training data (limit: %d)." % FLAGS.max_train_data_size)
-        # dev_set_path = FLAGS.train_dir + '/dev_set.' + str(FLAGS.from_vocab_size) + '.' + pickle.__name__
-        train_set_path = FLAGS.train_dir + '/train_set.ids' + str(FLAGS.vocab_size) + '.ds' + str(FLAGS.max_train_data_size) + '.' + pickle.__name__
+        # dev_set_path = FLAGS.train_dir + "/dev_set." + str(FLAGS.from_vocab_size) + "." + pickle.__name__
+        train_set_path = FLAGS.train_dir + "/train_set.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size) + "." + pickle.__name__
 
         if not tf.gfile.Exists(train_set_path) or True:
             print("Reading training data (limit: %d)." % FLAGS.max_train_data_size)
             train_set = read_data(train_id_data, FLAGS.max_train_data_size)
-            with tf.gfile.GFile(train_set_path, 'w') as f:
+            with tf.gfile.GFile(train_set_path, "w") as f:
                 pickle.dump(train_set, f)
         else:
             print("Loading training data (limit: %d)." % FLAGS.max_train_data_size)
-            with tf.gfile.GFile(train_set_path, mode='r') as f:
+            with tf.gfile.GFile(train_set_path, mode="r") as f:
                 train_set = pickle.load(f)
 
         train_bucket_sizes = [len(train_set[b]) for b in xrange(len(_buckets))]
@@ -123,6 +149,13 @@ def train():
 
         step_time, loss = 0.0, 0.0
         current_step = 0
+        epoch_step = 0
+        previous_losses = []
+
+        out = "Error: not enough steps to run with checkpoint_step."
+
+        steps_per_epoch = (int(train_total_size) // FLAGS.batch_size)
+        steps_per_checkpoint = FLAGS.steps_per_checkpoint if FLAGS.steps_per_checkpoint != 0 else steps_per_epoch
 
         while True:
             # Choose a bucket according to data distribution. We pick a random number
@@ -133,18 +166,77 @@ def train():
 
             # Get a batch and make a step.
             start_time = time.time()
-            encoder_inputs, decoder_inputs, target_weights = model.get_batch(
+            encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights = model.get_batch(
                 train_set, bucket_id)
-            _, step_loss, _ = model.step(sess, encoder_inputs, decoder_inputs,
+            _, step_loss, _ = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs,
                                          target_weights, bucket_id, False)
-            step_time += (time.time() - start_time) / FLAGS.steps_per_checkpoint
-            loss += step_loss / FLAGS.steps_per_checkpoint
+            step_time += (time.time() - start_time) / steps_per_checkpoint
+            loss += step_loss / steps_per_checkpoint
             current_step += 1
 
-            perplexity = math.exp(float(step_loss)) if step_loss < 300 else float("inf")
-            print("global step %d learning rate %.4f step-time %.2f perplexity "
-                  "%.2f" % (model.global_step.eval(), model.learning_rate.eval(),
-                            (time.time() - start_time), perplexity))
+            # print condition
+            if current_step % 1 == 0:
+                print("  global step %d learning rate %.4f step-time %.2f loss %.2f perplexity "
+                      "%.2f" % (model.global_step.eval(), model.learning_rate.eval(),
+                                (time.time() - start_time), step_loss, get_perplexity(step_loss)))
+                # decode_tester(sess, model)
+
+            # per checkpoint jobs
+            if current_step % steps_per_checkpoint == 0:
+                # Print statistics for the previous epoch.
+                out = "checkpoint: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
+                    model.global_step.eval(), model.learning_rate.eval(), step_time, loss, get_perplexity(loss))
+                print(out)
+
+                # Decrease learning rate if no improvement was seen over last 3 times.
+                if len(previous_losses) > 2 and loss > max(previous_losses[-3:]):
+                    sess.run(model.learning_rate_decay_op)
+                previous_losses.append(loss)
+
+                step_time, loss = 0.0, 0.0
+
+            # escape if all epoch is done
+            if current_step % steps_per_epoch == 0:
+                epoch_step += 1
+                print("epoch %d" % epoch_step)
+                if FLAGS.epoch != 0 and epoch_step >= FLAGS.epoch:
+                    with open(FLAGS.train_dir + "/result.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size), "a") as output_file:
+                        output_file.writelines(datetime.now().strftime("%Y-%m-%d-%H:%M:%S") + ": " + out + " // Tag: " + FLAGS.out_tag)
+                    break
+
+
+def decode_tester(sess, model):
+    model.batch_size = 1  # We decode one sentence at a time.
+
+    # Load vocabularies.
+    vocab_path = os.path.join(FLAGS.data_dir, "vocab%d.%s" % (FLAGS.vocab_size, pickle.__name__))
+    with gfile.GFile(vocab_path, mode="r") as vocab_file:
+        id_to_vocab, vocab_to_id, vocab_freq = pickle.load(vocab_file)
+
+    data = [{
+        "source": code_loader._START_LINE + "\n" +
+                  "print sum(map(int, raw_input().split()))" + "\n" +
+                  code_loader._END_LINE
+    }]
+    data = source_filter.set_token(data)
+    source_data = code_loader.data_to_tokens_list(data)
+
+    id_data = []
+    for source in source_data:
+        id_source = [[code_loader._START_LINE_ID]]
+        for line in source:
+            id_line = [vocab_to_id.get(word[1], code_loader.UNK_ID) for word in line]
+            id_source.append(id_line)
+        id_source.append([code_loader._END_LINE_ID])
+        id_data.append(id_source)
+
+    source_ids = [code[line_idx], code[line_idx + 2]]
+    target_ids = [code[line_idx + 1]]
+    target_ids[0].append(code_loader.EOS_ID)
+
+    data_set = [source_ids, target_ids]
+
+    token_ids = code_loader.sentence_to_token_ids(encoding_lines, vocab_to_id)
 
 
 def main(_):
@@ -153,5 +245,5 @@ def main(_):
     train()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     tf.app.run()

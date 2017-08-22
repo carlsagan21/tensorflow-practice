@@ -78,12 +78,18 @@ def embedding_rnn_seq2seq(
             embedding_size=embedding_size
         )
 
+        encoder_inputs_front = []
+        encoder_inputs_back = []
+        for encoder_input in encoder_inputs:
+            encoder_inputs_front.append(encoder_input[0])
+            encoder_inputs_back.append(encoder_input[1])
+
         _, encoder_front_state = tf.contrib.rnn.static_rnn(
-            encoder_cell, encoder_inputs, dtype=dtype, scope='enc_front'
+            encoder_cell, encoder_inputs_front, dtype=dtype, scope="enc_front"
         )
 
         _, encoder_back_state = tf.contrib.rnn.static_rnn(
-            encoder_cell, encoder_inputs, dtype=dtype, scope='enc_back'
+            encoder_cell, encoder_inputs_back, dtype=dtype, scope="enc_back"
         )
 
         # 말이 되나? final state 만 쓰기
@@ -92,7 +98,7 @@ def embedding_rnn_seq2seq(
         duct_tape = tf.Variable(
             initial_value=tf.random_normal(
                 [num_layers, embedding_size * 2, embedding_size],
-                name='tape'
+                name="tape"
             )
         )
 
@@ -202,7 +208,7 @@ class CodeModel(object):
 
         # FIXME shape = [batch_size] or None?
         for i in xrange(buckets[-1][0]):  # Last bucket is the biggest one.
-            self.encoder_inputs.append(tf.placeholder(tf.int32, shape=[None], name="encoder{0}".format(i)))
+            self.encoder_inputs.append(tf.placeholder(tf.int32, shape=[2, None], name="encoder{0}".format(i)))
         for i in xrange(buckets[-1][1] + 1):
             self.decoder_inputs.append(tf.placeholder(tf.int32, shape=[None], name="decoder{0}".format(i)))
             self.target_weights.append(tf.placeholder(dtype, shape=[None], name="weight{0}".format(i)))
@@ -225,7 +231,7 @@ class CodeModel(object):
             )
 
         if forward_only:
-            print('cannot be here. TODO forward only')
+            print("cannot be here. TODO forward only")
         else:
             self.outputs, self.losses = tf.contrib.legacy_seq2seq.model_with_buckets(
                 self.encoder_inputs, self.decoder_inputs, targets,
@@ -234,16 +240,16 @@ class CodeModel(object):
                 softmax_loss_function=softmax_loss_function
             )
 
-        print('model output and losses are set. start to set gradient descendent.')
+        print("model output and losses are set. start to set gradient descendent.")
 
         # Gradients and SGD update operation for training the model.
         params = tf.trainable_variables()
         if not forward_only:
             self.gradient_norms = []
             self.updates = []
-            opt = tf.train.GradientDescentOptimizer(self.learning_rate)
+            opt = tf.train.RMSPropOptimizer(self.learning_rate)
             for b in xrange(len(buckets)):
-                print('setting gradient for bucket %d' % b)
+                print("setting gradient for bucket %d" % b)
                 gradients = tf.gradients(self.losses[b], params)
                 clipped_gradients, norm = tf.clip_by_global_norm(gradients,
                                                                  max_gradient_norm)
@@ -251,9 +257,72 @@ class CodeModel(object):
                 self.updates.append(opt.apply_gradients(
                     zip(clipped_gradients, params), global_step=self.global_step))
         else:
-            print('cannot be here. TODO forward only')
+            print("cannot be here. TODO forward only")
 
         self.saver = tf.train.Saver(tf.global_variables())
+
+    def step(self, session, encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights,
+             bucket_id, forward_only):
+        """Run a step of the model feeding the given inputs.
+
+        Args:
+          session: tensorflow session to use.
+          encoder_inputs: list of numpy int vectors to feed as encoder inputs.
+          decoder_inputs: list of numpy int vectors to feed as decoder inputs.
+          target_weights: list of numpy float vectors to feed as target weights.
+          bucket_id: which bucket of the model to use.
+          forward_only: whether to do the backward step or only forward.
+
+        Returns:
+          A triple consisting of gradient norm (or None if we did not do backward),
+          average perplexity, and the outputs.
+
+        Raises:
+          ValueError: if length of encoder_inputs, decoder_inputs, or
+            target_weights disagrees with bucket size for the specified bucket_id.
+        """
+        # Check if the sizes match.
+        encoder_size, decoder_size = self.buckets[bucket_id]
+        if len(encoder_inputs_front) != encoder_size:
+            raise ValueError("Encoder front length must be equal to the one in bucket,"
+                             " %d != %d." % (len(encoder_inputs_front), encoder_size))
+        if len(encoder_inputs_back) != encoder_size:
+            raise ValueError("Encoder back length must be equal to the one in bucket,"
+                             " %d != %d." % (len(encoder_inputs_back), encoder_size))
+        if len(decoder_inputs) != decoder_size:
+            raise ValueError("Decoder length must be equal to the one in bucket,"
+                             " %d != %d." % (len(decoder_inputs), decoder_size))
+        if len(target_weights) != decoder_size:
+            raise ValueError("Weights length must be equal to the one in bucket,"
+                             " %d != %d." % (len(target_weights), decoder_size))
+
+        # Input feed: encoder inputs, decoder inputs, target_weights, as provided.
+        input_feed = {}
+        for l in xrange(encoder_size):
+            input_feed[self.encoder_inputs[l].name] = [encoder_inputs_front[l], encoder_inputs_back[l]]
+        for l in xrange(decoder_size):
+            input_feed[self.decoder_inputs[l].name] = decoder_inputs[l]
+            input_feed[self.target_weights[l].name] = target_weights[l]
+
+        # Since our targets are decoder inputs shifted by one, we need one more.
+        last_target = self.decoder_inputs[decoder_size].name
+        input_feed[last_target] = np.zeros([self.batch_size], dtype=np.int32)
+
+        # Output feed: depends on whether we do a backward step or not.
+        if not forward_only:
+            output_feed = [self.updates[bucket_id],  # Update Op that does SGD.
+                           self.gradient_norms[bucket_id],  # Gradient norm.
+                           self.losses[bucket_id]]  # Loss for this batch.
+        else:
+            output_feed = [self.losses[bucket_id]]  # Loss for this batch.
+            for l in xrange(decoder_size):  # Output logits.
+                output_feed.append(self.outputs[bucket_id][l])
+
+        outputs = session.run(output_feed, input_feed)
+        if not forward_only:
+            return outputs[1], outputs[2], None  # Gradient norm, loss, no outputs.
+        else:
+            return None, outputs[0], outputs[1:]  # No gradient norm, loss, outputs.
 
     def get_batch(self, data, bucket_id):
         """Get a random batch of data from the specified bucket, prepare for step.
@@ -280,21 +349,28 @@ class CodeModel(object):
             encoder_input, decoder_input = random.choice(data[bucket_id])
 
             # Encoder inputs are padded and then reversed.
-            encoder_pad = [code_loader.PAD_ID] * (encoder_size - len(encoder_input))
-            encoder_inputs.append(list(reversed(encoder_input + encoder_pad)))
+            encoder_pad_front = [code_loader.PAD_ID] * (encoder_size - len(encoder_input[0]))
+            encoder_pad_back = [code_loader.PAD_ID] * (encoder_size - len(encoder_input[1]))
+            encoder_inputs.append(
+                [list(reversed(encoder_input[0] + encoder_pad_front)),
+                 list(reversed(encoder_input[1] + encoder_pad_back))]
+            )
 
             # Decoder inputs get an extra "GO" symbol, and are padded then.
-            decoder_pad_size = decoder_size - len(decoder_input) - 1
-            decoder_inputs.append([code_loader.GO_ID] + decoder_input +
-                                  [code_loader.PAD_ID] * decoder_pad_size)
+            decoder_pad = [code_loader.PAD_ID] * (decoder_size - len(decoder_input[0]) - 1)
+            decoder_inputs.append([code_loader.GO_ID] + decoder_input[0] + decoder_pad)
 
         # Now we create batch-major vectors from the data selected above.
-        batch_encoder_inputs, batch_decoder_inputs, batch_weights = [], [], []
+        batch_encoder_inputs_front, batch_encoder_inputs_back, batch_decoder_inputs, batch_weights = [], [], [], []
 
         # Batch encoder inputs are just re-indexed encoder_inputs.
         for length_idx in xrange(encoder_size):
-            batch_encoder_inputs.append(
-                np.array([encoder_inputs[batch_idx][length_idx]
+            batch_encoder_inputs_front.append(
+                np.array([encoder_inputs[batch_idx][0][length_idx]
+                          for batch_idx in xrange(self.batch_size)], dtype=np.int32))
+        for length_idx in xrange(encoder_size):
+            batch_encoder_inputs_back.append(
+                np.array([encoder_inputs[batch_idx][1][length_idx]
                           for batch_idx in xrange(self.batch_size)], dtype=np.int32))
 
         # Batch decoder inputs are re-indexed decoder_inputs, we create weights.
@@ -313,4 +389,4 @@ class CodeModel(object):
                 if length_idx == decoder_size - 1 or target == code_loader.PAD_ID:
                     batch_weight[batch_idx] = 0.0
             batch_weights.append(batch_weight)
-        return batch_encoder_inputs, batch_decoder_inputs, batch_weights
+        return batch_encoder_inputs_front, batch_encoder_inputs_back, batch_decoder_inputs, batch_weights
