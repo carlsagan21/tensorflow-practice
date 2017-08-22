@@ -34,11 +34,11 @@ import code_loader
 import code_model
 import source_filter
 
-tf.app.flags.DEFINE_float("learning_rate", 0.008, "Learning rate.")
+tf.app.flags.DEFINE_float("learning_rate", 0.002, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99, "Learning rate decays by this much.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5.0, "Clip gradients to this norm.")
-tf.app.flags.DEFINE_integer("batch_size", 50, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("size", 256, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("batch_size", 32, "Batch size to use during training.")
+tf.app.flags.DEFINE_integer("size", 64, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("num_layers", 2, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("vocab_size", 0, "Token vocabulary size. (0: set by data total vocab)")
 tf.app.flags.DEFINE_integer("epoch", 0, "How many epochs (0: no limit)")
@@ -167,8 +167,8 @@ def train():
         std_out = "Error: not enough steps to run with checkpoint_step."
         test_out = ""
 
-        steps_per_epoch = (int(train_total_size) // FLAGS.batch_size)
-        steps_per_checkpoint = FLAGS.steps_per_checkpoint if FLAGS.steps_per_checkpoint == 0 else int(train_total_size)
+        steps_per_epoch = int(train_total_size) // FLAGS.batch_size
+        steps_per_checkpoint = FLAGS.steps_per_checkpoint if FLAGS.steps_per_checkpoint != 0 else int(train_total_size)
 
         while True:
             # Choose a bucket according to data distribution. We pick a random number
