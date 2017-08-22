@@ -34,11 +34,11 @@ import code_loader
 import code_model
 import source_filter
 
-tf.app.flags.DEFINE_float("learning_rate", 0.002, "Learning rate.")
+tf.app.flags.DEFINE_float("learning_rate", 0.008, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99, "Learning rate decays by this much.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 50, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("size", 64, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("size", 256, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("num_layers", 2, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("vocab_size", 0, "Token vocabulary size. (0: set by data total vocab)")
 tf.app.flags.DEFINE_integer("epoch", 0, "How many epochs (0: no limit)")
@@ -61,7 +61,7 @@ FLAGS = tf.app.flags.FLAGS
 # encoding 이 두개니까 버킷을 어떻게 잡을지 생각좀 해봐야
 # _buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
 # _buckets = [(10, 15), (40, 50)]
-_buckets = [(15, 25), (25, 35)]
+_buckets = [(20, 30), (30, 40)]
 
 
 def read_data(train_id_set, max_size=None):
@@ -125,9 +125,7 @@ def save_checkpoint(model, sess):
 
 
 def train():
-    cache = False
-
-    train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, cache=cache)
+    train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, cache=FLAGS.cache)
 
     with tf.Session() as sess:
         # Create model.
@@ -139,7 +137,7 @@ def train():
         # dev_set_path = FLAGS.train_dir + "/dev_set." + str(FLAGS.from_vocab_size) + "." + pickle.__name__
         train_set_path = FLAGS.train_dir + "/train_set.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size) + "." + pickle.__name__
 
-        if not tf.gfile.Exists(train_set_path) or not cache:
+        if not tf.gfile.Exists(train_set_path) or not FLAGS.cache:
             print("Reading training data (limit: %d)." % FLAGS.max_train_data_size)
             train_set = read_data(train_id_data, FLAGS.max_train_data_size)
             with tf.gfile.GFile(train_set_path, "w") as f:
@@ -170,11 +168,7 @@ def train():
         test_out = ""
 
         steps_per_epoch = (int(train_total_size) // FLAGS.batch_size)
-        steps_per_checkpoint = 2000
-        if FLAGS.steps_per_checkpoint != 0:
-            steps_per_checkpoint = FLAGS.steps_per_checkpoint
-        elif FLAGS.epoch != 0:
-            steps_per_checkpoint = steps_per_epoch * FLAGS.epoch
+        steps_per_checkpoint = FLAGS.steps_per_checkpoint if FLAGS.steps_per_checkpoint == 0 else int(train_total_size)
 
         while True:
             # Choose a bucket according to data distribution. We pick a random number
