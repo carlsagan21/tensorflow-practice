@@ -1,5 +1,7 @@
 # coding=utf-8
+from __future__ import absolute_import
 from __future__ import print_function
+from __future__ import division
 
 import random
 
@@ -230,8 +232,21 @@ class CodeModel(object):
                 dtype=dtype
             )
 
+        # Training outputs and losses.
         if forward_only:
-            print("cannot be here. TODO forward only")
+            self.outputs, self.losses = tf.contrib.legacy_seq2seq.model_with_buckets(
+                self.encoder_inputs, self.decoder_inputs, targets,
+                self.target_weights, buckets,
+                lambda x, y: seq2seq_f(x, y, True),
+                softmax_loss_function=softmax_loss_function
+            )
+            # If we use output projection, we need to project outputs for decoding.
+            if output_projection is not None:
+                for b in xrange(len(buckets)):
+                    self.outputs[b] = [
+                        tf.matmul(output, output_projection[0]) + output_projection[1]
+                        for output in self.outputs[b]
+                    ]
         else:
             self.outputs, self.losses = tf.contrib.legacy_seq2seq.model_with_buckets(
                 self.encoder_inputs, self.decoder_inputs, targets,
@@ -254,8 +269,6 @@ class CodeModel(object):
                 self.gradient_norms.append(norm)
                 self.updates.append(opt.apply_gradients(
                     zip(clipped_gradients, params), global_step=self.global_step))
-        else:
-            print("cannot be here. TODO forward only")
 
         self.saver = tf.train.Saver(tf.global_variables())
 

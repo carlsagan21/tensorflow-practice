@@ -1,13 +1,10 @@
 # coding=utf-8
 # TODO must
+# beam search
+# 3to2 쓸만한지 보기
 # remove exactly same code
 # feed source length as sequence_length
-# beam search
-# decoder
-# decoder test
-# feed forward
 # attention
-# beam search
 # 1.0 -> 1.3
 # 연속되는 동일한 코드 제거하기
 
@@ -16,6 +13,7 @@
 # bucketing
 # optimizer
 
+from __future__ import absolute_import
 from __future__ import print_function
 from __future__ import division
 
@@ -52,7 +50,8 @@ tf.app.flags.DEFINE_integer("steps_per_checkpoint", 0, "How many training steps 
 tf.app.flags.DEFINE_boolean("decode", False, "Set to True for interactive decoding.")
 tf.app.flags.DEFINE_boolean("self_test", False, "Run a self-test if this is set to True.")
 tf.app.flags.DEFINE_boolean("use_fp16", False, "Train using fp16 instead of fp32.")
-tf.app.flags.DEFINE_boolean("cache", False, "Train using cached data.")
+tf.app.flags.DEFINE_boolean("cache", True, "Train using cached data.")
+tf.app.flags.DEFINE_boolean("decode_while_training", False, "Do test decode while training.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -118,19 +117,29 @@ def get_perplexity(loss):
     return math.exp(float(loss)) if loss < 300 else float("inf")
 
 
-def save_checkpoint(model, sess):
+def save_checkpoint(model, sess, vocab_size):
     # Save checkpoint and zero timer and loss.
-    checkpoint_path = os.path.join(FLAGS.train_dir, "translate.ckpt" + ".size." + str(FLAGS.size) + ".nl." + str(FLAGS.num_layers))
+    with open(FLAGS.train_dir + "/corrector.ckpt.vb", mode="w") as vocab_size_file:
+        pickle.dump(vocab_size, vocab_size_file)
+
+    checkpoint_path = os.path.join(FLAGS.train_dir, "corrector.ckpt" + ".size." + str(FLAGS.size) + ".nl." + str(FLAGS.num_layers) + ".vs." + str(vocab_size))
     model.saver.save(sess, checkpoint_path, global_step=model.global_step)
 
 
 def train():
     train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, cache=FLAGS.cache)
 
+    vocab_size = FLAGS.vocab_size if FLAGS.vocab_size != 0 else len(id_to_vocab)
+
+    # Create decode model
+    # print("Creating %d layers of %d units for decode." % (FLAGS.num_layers, FLAGS.size))
+    # decode_sess = tf.Session()
+    # decode_model = create_model(decode_sess, True, vocab_size=(FLAGS.vocab_size if FLAGS.vocab_size != 0 else len(id_to_vocab)))
+
+    # Create model.
     with tf.Session() as sess:
-        # Create model.
-        print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
-        model = create_model(sess, False, vocab_size=(FLAGS.vocab_size if FLAGS.vocab_size != 0 else len(id_to_vocab)))
+        print("Creating %d layers of %d units with %d vocab." % (FLAGS.num_layers, FLAGS.size, vocab_size))
+        model = create_model(sess, False, vocab_size=vocab_size)
 
         # Read data into buckets and compute their sizes.
         print("Reading development and training data (limit: %d)." % FLAGS.max_train_data_size)
@@ -161,7 +170,7 @@ def train():
 
         epoch_step_time, epoch_loss, ckpt_step_time, ckpt_loss = 0.0, 0.0, 0.0, 0.0
         current_step = 0
-        epoch_step = 0
+
         previous_losses = []
 
         std_out = "Error: not enough steps to run with checkpoint_step."
@@ -169,6 +178,8 @@ def train():
 
         steps_per_epoch = int(train_total_size) // FLAGS.batch_size
         steps_per_checkpoint = FLAGS.steps_per_checkpoint if FLAGS.steps_per_checkpoint != 0 else int(train_total_size)
+
+        epoch_step = model.global_step.eval() // steps_per_epoch
 
         while True:
             # Choose a bucket according to data distribution. We pick a random number
@@ -204,10 +215,8 @@ def train():
                     model.global_step.eval(), model.learning_rate.eval(), ckpt_step_time, ckpt_loss, get_perplexity(ckpt_loss))
                 print(std_out)
 
-                _ = decode_tester(sess, model)
-
                 # Save checkpoint and zero timer and loss.
-                save_checkpoint(model, sess)
+                save_checkpoint(model, sess, vocab_size)
                 ckpt_step_time, ckpt_loss = 0.0, 0.0
 
             # escape if all epoch is done
@@ -225,13 +234,14 @@ def train():
                     sess.run(model.learning_rate_decay_op)
                 previous_losses.append(epoch_loss)
 
-                test_out = decode_tester(sess, model)
+                # with tf.variable_scope("decoding") as scope:
+                #     decode()
 
                 epoch_step_time, epoch_loss = 0.0, 0.0
 
                 if FLAGS.epoch != 0 and epoch_step >= FLAGS.epoch:
                     # Save checkpoint.
-                    save_checkpoint(model, sess)
+                    save_checkpoint(model, sess, vocab_size)
 
                     with open(FLAGS.train_dir + "/result.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size), "a") as output_file:
                         output_file.write(
@@ -241,7 +251,7 @@ def train():
                     break
 
 
-def decode_tester(sess, model):
+def learning_tester(sess, model):
     model.batch_size = 1  # We decode one sentence at a time.
 
     # Load vocabularies.
@@ -302,10 +312,87 @@ def decode_tester(sess, model):
     return vocab_output
 
 
+def decode_with_session_and_model(sess, model):
+    # Load vocabularies.
+    vocab_path = os.path.join(FLAGS.data_dir, "vocab%d.%s" % (FLAGS.vocab_size, pickle.__name__))
+    with gfile.GFile(vocab_path, mode="r") as vocab_file:
+        id_to_vocab, vocab_to_id, vocab_freq = pickle.load(vocab_file)
+
+    source = "print sum(map(int, raw_input().split()))"
+    data = [{
+        "source": source
+    }]
+    data = source_filter.filter_danger(data, "(import\s+os)|(from\s+os)|(shutil)")
+    source_filter.remove_redundent_newlines_and_set_line_length(data)
+    data = source_filter.set_token(data)
+    source_data = code_loader.data_to_tokens_list(data)
+
+    id_data = []
+    for src in source_data:
+        id_source = [[code_loader.START_LINE_ID]]
+        for line in src:
+            id_line = [vocab_to_id.get(word[1], code_loader.UNK_ID) for word in line]
+            id_source.append(id_line)
+        id_source.append([code_loader.END_LINE_ID])
+        id_data.append(id_source)
+
+    bucket_id = -1
+    data_set = [[] for _ in _buckets]
+    for code in id_data:
+        for line_idx in xrange(len(code) - 2):
+
+            source_ids = [code[line_idx], code[line_idx + 2]]
+            target_ids = [code[line_idx + 1]]
+            target_ids[0].append(code_loader.EOS_ID)
+
+            for idx, (source_size, target_size) in enumerate(_buckets):
+                if len(source_ids[0]) < source_size and len(source_ids[1]) < source_size:
+                    data_set[idx].append([source_ids, target_ids])
+                    bucket_id = idx
+                    break
+
+    if bucket_id == -1:
+        logging.warning("Sentence truncated: %s", source)
+        return
+
+    # Get a 1-element batch to feed the sentence to the model.
+    encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights = model.get_batch(data_set, bucket_id)
+    # Get output logits for the sentence.
+    _, _, output_logits = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights, bucket_id, True)
+    # _, _, output_logits = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights, bucket_id, True)
+    # This is a greedy decoder - outputs are just argmaxes of output_logits.
+    outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
+    # If there is an EOS symbol in outputs, cut them at that point.
+    if code_loader.EOS_ID in outputs:
+        outputs = outputs[:outputs.index(code_loader.EOS_ID)]
+        # Print out French sentence corresponding to outputs.
+    vocab_output = " ".join([tf.compat.as_str(id_to_vocab[output]) for output in outputs])
+    print("\toutput: " + vocab_output)
+    return vocab_output
+
+
+def decode(sess=None, model=None):
+    vocab_size = FLAGS.vocab_size
+    with open(FLAGS.train_dir + "/corrector.ckpt.vb", mode="r") as vocab_size_file:
+        vocab_size = pickle.load(vocab_size_file)
+
+    if not sess:
+        sess = tf.Session()
+    if not model:
+        # Create model and load parameters.
+        print("Creating %d layers of %d units with %d vocab. for decode." % (FLAGS.num_layers, FLAGS.size, vocab_size))
+        model = create_model(sess, True, vocab_size=vocab_size)
+        model.batch_size = 1  # We decode one sentence at a time.
+
+    decode_with_session_and_model(sess, model)
+    sess.close()
+
+
 def main(_):
-    # if FLAGS.self_test:
-    #     self_test()
-    train()
+    if FLAGS.decode:
+        decode()
+    else:
+        train()
 
 
 if __name__ == "__main__":

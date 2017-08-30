@@ -1,5 +1,7 @@
 # coding=utf-8
+from __future__ import absolute_import
 from __future__ import print_function
+from __future__ import division
 
 import os
 
@@ -58,7 +60,10 @@ def create_vocabulary(vocabulary_path, data, max_vocabulary_size, cache=True):
 
         vocab_list = _START_VOCAB + sorted(vocab_freq, key=vocab_freq.get, reverse=True)
         if len(vocab_list) > max_vocabulary_size:
+            print("  total vocab %d max %d removed %d" % (len(vocab_list), max_vocabulary_size, len(vocab_list) - max_vocabulary_size))
             vocab_list = vocab_list[:max_vocabulary_size]
+        else:
+            print("  total vocab %d max %d" % (len(vocab_list), max_vocabulary_size))
 
         id_to_vocab = dict([(idx, vocab) for (idx, vocab) in enumerate(vocab_list)])
         vocab_to_id = dict([(vocab, idx) for (idx, vocab) in enumerate(vocab_list)])
@@ -130,7 +135,9 @@ def prepare_data(
         data_path="1000-6-2017-07-13-12:55:21.msgpack",
         cache=True
 ):
-    big_vocab_size = 10000000  # big enough
+    original_vocab_size = vocabulary_size
+    if vocabulary_size == 0:
+        vocabulary_size = 10000000  # big enough
 
     data = []
     with open(data_dir + "/" + data_path) as data_file:
@@ -162,12 +169,12 @@ def prepare_data(
 
     # Create vocabularies of the appropriate sizes.
     # vocab 을 따로 관리할 필요 없음. 같은 소스이므로.
-    vocab_path = os.path.join(data_dir, "vocab%d.%s" % (vocabulary_size, pickle.__name__))
-    id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, big_vocab_size, cache)
+    vocab_path = os.path.join(data_dir, "vocab%d.%s" % (original_vocab_size, pickle.__name__))
+    id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, vocabulary_size, cache)
 
     train_path = data_dir + "/" + data_path
     # Create token ids for the training data.
-    train_ids_path = train_path + (".ids%d" % vocabulary_size)
+    train_ids_path = train_path + (".ids%d" % original_vocab_size)
     train_id_data = data_to_token_ids(source_data, train_ids_path, vocab_to_id, cache)
 
     # Create token ids for the development data.
