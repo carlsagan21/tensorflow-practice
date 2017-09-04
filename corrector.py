@@ -60,7 +60,7 @@ FLAGS = tf.app.flags.FLAGS
 # encoding 이 두개니까 버킷을 어떻게 잡을지 생각좀 해봐야
 # _buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
 # _buckets = [(10, 15), (40, 50)]
-_buckets = [(20, 30), (30, 40)]
+_buckets = [(50, 50)]
 
 
 def read_data(train_id_set, max_size=None):
@@ -75,6 +75,21 @@ def read_data(train_id_set, max_size=None):
 
             source_ids = [code[line_idx], code[line_idx + 2]]
             target_ids = [code[line_idx + 1]]
+            target_ids[0].append(code_loader.EOS_ID)
+
+            for bucket_id, (source_size, target_size) in enumerate(_buckets):
+                if len(source_ids[0]) < source_size and len(source_ids[1]) < source_size and len(target_ids[0]) < target_size:
+                    saved += 1
+                    data_set[bucket_id].append([source_ids, target_ids])
+                    break
+
+        for line_idx in xrange(len(code) - 1):
+            if max_size and counter >= max_size:
+                break
+            counter += 1
+
+            source_ids = [code[line_idx], code[line_idx + 1]]
+            target_ids = [[]]
             target_ids[0].append(code_loader.EOS_ID)
 
             for bucket_id, (source_size, target_size) in enumerate(_buckets):
@@ -127,7 +142,7 @@ def save_checkpoint(model, sess, vocab_size):
 
 
 def train():
-    train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, cache=FLAGS.cache)
+    train_id_data, id_to_vocab, vocab_to_id = code_loader.prepare_data(FLAGS.data_dir, FLAGS.vocab_size, data_path='1000-0.msgpack', cache=FLAGS.cache)
 
     vocab_size = FLAGS.vocab_size if FLAGS.vocab_size != 0 else len(id_to_vocab)
 
@@ -159,6 +174,8 @@ def train():
         train_bucket_sizes = [len(train_set[b]) for b in xrange(len(_buckets))]
         train_total_size = float(sum(train_bucket_sizes))
 
+        print("Total train %d" % train_total_size)
+
         # A bucket scale is a list of increasing numbers from 0 to 1 that we'll use
         # to select a bucket. Length of [scale[i], scale[i+1]] is proportional to
         # the size if i-th training bucket, as used later.
@@ -169,7 +186,7 @@ def train():
         print("Running the training loop")
 
         epoch_step_time, epoch_loss, ckpt_step_time, ckpt_loss = 0.0, 0.0, 0.0, 0.0
-        current_step = 0
+        # current_step = 0
 
         previous_losses = []
 
@@ -200,32 +217,21 @@ def train():
             epoch_step_time += (time.time() - start_time) / steps_per_epoch
             epoch_loss += step_loss / steps_per_epoch
 
-            current_step += 1
+            # current_step += 1
 
             # print condition
-            if current_step % 1 == 0:
+            if model.global_step.eval() % 1 == 0:
                 print("  global step %d learning rate %.4f step-time %.2f loss %.2f perplexity "
                       "%.2f" % (model.global_step.eval(), model.learning_rate.eval(),
                                 (time.time() - start_time), step_loss, get_perplexity(step_loss)))
 
-            # per checkpoint jobs
-            if current_step % steps_per_checkpoint == 0:
-                # Print statistics for the previous checkpoint.
-                std_out = "checkpoint: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
-                    model.global_step.eval(), model.learning_rate.eval(), ckpt_step_time, ckpt_loss, get_perplexity(ckpt_loss))
-                print(std_out)
-
-                # Save checkpoint and zero timer and loss.
-                save_checkpoint(model, sess, vocab_size)
-                ckpt_step_time, ckpt_loss = 0.0, 0.0
-
-            # escape if all epoch is done
-            if current_step % steps_per_epoch == 0:
+            # per epoch
+            if model.global_step.eval() % steps_per_epoch == 0:
                 epoch_step += 1
                 print("epoch %d" % epoch_step)
 
                 # Print statistics for the previous epoch.
-                std_out = "checkpoint: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
+                std_out = "epoch: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
                     model.global_step.eval(), model.learning_rate.eval(), epoch_step_time, epoch_loss, get_perplexity(epoch_loss))
                 print(std_out)
 
@@ -239,6 +245,7 @@ def train():
 
                 epoch_step_time, epoch_loss = 0.0, 0.0
 
+                # escape if all epoch is done
                 if FLAGS.epoch != 0 and epoch_step >= FLAGS.epoch:
                     # Save checkpoint.
                     save_checkpoint(model, sess, vocab_size)
@@ -250,66 +257,16 @@ def train():
                         )
                     break
 
+            # per checkpoint jobs
+            if model.global_step.eval() % steps_per_checkpoint == 0:
+                # Print statistics for the previous checkpoint.
+                std_out = "checkpoint: global step %d learning rate %.4f step-time %.2f loss %.2f perplexity %.2f" % (
+                    model.global_step.eval(), model.learning_rate.eval(), ckpt_step_time, ckpt_loss, get_perplexity(ckpt_loss))
+                print(std_out)
 
-def learning_tester(sess, model):
-    model.batch_size = 1  # We decode one sentence at a time.
-
-    # Load vocabularies.
-    vocab_path = os.path.join(FLAGS.data_dir, "vocab%d.%s" % (FLAGS.vocab_size, pickle.__name__))
-    with gfile.GFile(vocab_path, mode="r") as vocab_file:
-        id_to_vocab, vocab_to_id, vocab_freq = pickle.load(vocab_file)
-
-    source = "print sum(map(int, raw_input().split()))"
-    data = [{
-        "source": source
-    }]
-    data = source_filter.filter_danger(data, "(import\s+os)|(from\s+os)|(shutil)")
-    source_filter.remove_redundent_newlines_and_set_line_length(data)
-    data = source_filter.set_token(data)
-    source_data = code_loader.data_to_tokens_list(data)
-
-    id_data = []
-    for src in source_data:
-        id_source = [[code_loader.START_LINE_ID]]
-        for line in src:
-            id_line = [vocab_to_id.get(word[1], code_loader.UNK_ID) for word in line]
-            id_source.append(id_line)
-        id_source.append([code_loader.END_LINE_ID])
-        id_data.append(id_source)
-
-    bucket_id = -1
-    data_set = [[] for _ in _buckets]
-    for code in id_data:
-        for line_idx in xrange(len(code) - 2):
-
-            source_ids = [code[line_idx], code[line_idx + 2]]
-            target_ids = [code[line_idx + 1]]
-            target_ids[0].append(code_loader.EOS_ID)
-
-            for idx, (source_size, target_size) in enumerate(_buckets):
-                if len(source_ids[0]) < source_size and len(source_ids[1]) < source_size:
-                    data_set[idx].append([source_ids, target_ids])
-                    bucket_id = idx
-                    break
-
-    if bucket_id == -1:
-        logging.warning("Sentence truncated: %s", source)
-        return
-
-    # Get a 1-element batch to feed the sentence to the model.
-    encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights = model.get_batch(data_set, bucket_id)
-    # Get output logits for the sentence.
-    _, _, output_logits = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights, bucket_id, True)
-    # _, _, output_logits = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights, bucket_id, True)
-    # This is a greedy decoder - outputs are just argmaxes of output_logits.
-    outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-    # If there is an EOS symbol in outputs, cut them at that point.
-    if code_loader.EOS_ID in outputs:
-        outputs = outputs[:outputs.index(code_loader.EOS_ID)]
-        # Print out French sentence corresponding to outputs.
-    vocab_output = " ".join([tf.compat.as_str(id_to_vocab[output]) for output in outputs])
-    print("\toutput: " + vocab_output)
-    return vocab_output
+                # Save checkpoint and zero timer and loss.
+                save_checkpoint(model, sess, vocab_size)
+                ckpt_step_time, ckpt_loss = 0.0, 0.0
 
 
 def decode_with_session_and_model(sess, model):
@@ -318,7 +275,7 @@ def decode_with_session_and_model(sess, model):
     with gfile.GFile(vocab_path, mode="r") as vocab_file:
         id_to_vocab, vocab_to_id, vocab_freq = pickle.load(vocab_file)
 
-    source = "print sum(map(int, raw_input().split()))"
+    source = "s = raw_input().split()\nprint sum(map(int, s))"
     data = [{
         "source": source
     }]
@@ -357,9 +314,10 @@ def decode_with_session_and_model(sess, model):
 
     # Get a 1-element batch to feed the sentence to the model.
     encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights = model.get_batch(data_set, bucket_id)
+
     # Get output logits for the sentence.
     _, _, output_logits = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights, bucket_id, True)
-    # _, _, output_logits = model.step(sess, encoder_inputs_front, encoder_inputs_back, decoder_inputs, target_weights, bucket_id, True)
+
     # This is a greedy decoder - outputs are just argmaxes of output_logits.
     outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
     # If there is an EOS symbol in outputs, cut them at that point.
