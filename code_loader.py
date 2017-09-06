@@ -132,7 +132,7 @@ def data_to_tokens_list(data):
 def prepare_data(
         data_dir,
         vocabulary_size,
-        data_path="1000-6-2017-07-13-12:55:21.msgpack",
+        data_path,
         cache=True
 ):
     original_vocab_size = vocabulary_size
@@ -143,7 +143,7 @@ def prepare_data(
     with open(data_dir + "/" + data_path) as data_file:
         data = pickle.load(data_file)
 
-    data = source_filter.filter_danger(data, "(import\s+os)|(from\s+os)|(shutil)")
+    data = source_filter.filter_danger(data)
     source_filter.remove_redundent_newlines_and_set_line_length(data)
     data = source_filter.set_token(data)  # delete untokenizable sources
     data = filter(lambda elm: elm["accurate"], data)  # get only accurate

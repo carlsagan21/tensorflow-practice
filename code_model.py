@@ -490,7 +490,7 @@ class CodeModel(object):
         else:
             return None, outputs[0], outputs[1:]  # No gradient norm, loss, outputs.
 
-    def get_batch(self, data, bucket_id):
+    def get_batch(self, data, bucket_id, random_set=True):
         """Get a random batch of data from the specified bucket, prepare for step.
 
         To feed data in step(..) it must be a list of batch-major vectors, while
@@ -511,8 +511,8 @@ class CodeModel(object):
 
         # Get a random batch of encoder and decoder inputs from data,
         # pad them if needed, reverse encoder inputs and add GO to decoder.
-        for _ in xrange(self.batch_size):
-            encoder_input, decoder_input = random.choice(data[bucket_id])
+        for idx in xrange(self.batch_size):
+            encoder_input, decoder_input = random.choice(data[bucket_id]) if random_set else data[bucket_id][idx]
 
             # Encoder inputs are padded and then reversed.
             encoder_pad_front = [code_loader.PAD_ID] * (encoder_size - len(encoder_input[0]))
