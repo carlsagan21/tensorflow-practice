@@ -169,7 +169,7 @@ def prepare_data(
 
     # Create vocabularies of the appropriate sizes.
     # vocab 을 따로 관리할 필요 없음. 같은 소스이므로.
-    vocab_path = os.path.join(data_dir, "vocab%d.%s" % (original_vocab_size, pickle.__name__))
+    vocab_path = os.path.join(data_dir, data_path.split(".")[0] + ".vocab%d.%s" % (original_vocab_size, pickle.__name__))
     id_to_vocab, vocab_to_id, vocab_freq = create_vocabulary(vocab_path, source_data, vocabulary_size, cache)
 
     train_path = data_dir + "/" + data_path

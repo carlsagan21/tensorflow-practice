@@ -36,7 +36,7 @@ tf.app.flags.DEFINE_float("learning_rate", 0.002, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99, "Learning rate decays by this much.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 32, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("size", 256, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("size", 64, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("num_layers", 2, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("vocab_size", 0, "Token vocabulary size. (0: set by data total vocab)")
 tf.app.flags.DEFINE_integer("epoch", 0, "How many epochs (0: no limit)")
@@ -45,7 +45,7 @@ tf.app.flags.DEFINE_string("train_dir", "./code-data", "Training directory.")
 tf.app.flags.DEFINE_string("train_data_path", None, "Training data.")
 tf.app.flags.DEFINE_string("dev_data_path", None, "Training data.")
 tf.app.flags.DEFINE_string("out_tag", "", "A tag for certain output.")
-tf.app.flags.DEFINE_string("data_path", "./1000-0." + pickle.__name__, "path to data")
+tf.app.flags.DEFINE_string("data_path", "1000-6." + pickle.__name__, "path to data")
 tf.app.flags.DEFINE_integer("max_train_data_size", 0, "Limit on the size of training data (0: no limit).")
 tf.app.flags.DEFINE_integer("steps_per_checkpoint", 0, "How many training steps to do per checkpoint. (0: same with epoch)")
 tf.app.flags.DEFINE_boolean("decode", False, "Set to True for interactive decoding.")
@@ -140,7 +140,7 @@ def save_checkpoint(model, sess, vocab_size):
         pickle.dump(vocab_size, vocab_size_file)
 
     checkpoint_path = os.path.join(FLAGS.train_dir,
-                                   os.path.basename(__file__) + ".ckpt." + FLAGS.data_path.split(".")[0] + ".size." + str(FLAGS.size) + ".nl." + str(FLAGS.num_layers) + ".vs." + str(vocab_size))
+                                   FLAGS.data_path.split(".")[0] + ".ckpt.size." + str(FLAGS.size) + ".nl." + str(FLAGS.num_layers) + ".vs." + str(vocab_size))
     model.saver.save(sess, checkpoint_path, global_step=model.global_step)
 
 
@@ -162,7 +162,7 @@ def train():
         # Read data into buckets and compute their sizes.
         print("Reading development and training data (limit: %d)." % FLAGS.max_train_data_size)
         # dev_set_path = FLAGS.train_dir + "/dev_set." + str(FLAGS.from_vocab_size) + "." + pickle.__name__
-        train_set_path = FLAGS.train_dir + "/train_set.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size) + "." + pickle.__name__
+        train_set_path = FLAGS.train_dir + "/" + FLAGS.data_path.split(".")[0] + ".train_set.ids" + str(FLAGS.vocab_size) + ".ds" + str(FLAGS.max_train_data_size) + "." + pickle.__name__
 
         if not tf.gfile.Exists(train_set_path) or not FLAGS.cache:
             print("Reading training data (limit: %d)." % FLAGS.max_train_data_size)
@@ -274,13 +274,12 @@ def train():
 
 def decode_with_session_and_model(sess, model):
     # Load vocabularies.
-    vocab_path = os.path.join(FLAGS.data_dir, "vocab%d.%s" % (FLAGS.vocab_size, pickle.__name__))
+    vocab_path = os.path.join(FLAGS.data_dir, FLAGS.data_path.split(".")[0] + ".vocab%d.%s" % (FLAGS.vocab_size, pickle.__name__))
     with gfile.GFile(vocab_path, mode="r") as vocab_file:
         id_to_vocab, vocab_to_id, vocab_freq = pickle.load(vocab_file)
 
-    source = "s = raw_input().split()\n" \
-             "print sum(map(int, s))"
-
+    source = code_loader._START_LINE + '\n' + 'print(a+b)'
+#     source = "b = 2\n" + code_loader._END_LINE
     data = [{
         "source": source
     }]
